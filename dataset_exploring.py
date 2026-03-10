@@ -10,7 +10,7 @@ def _():
     import pandas as pd
     from nba_api.stats.endpoints import PlayerGameLogs, PlayerIndex
 
-    return (PlayerIndex,)
+    return PlayerGameLogs, PlayerIndex, pd
 
 
 @app.cell
@@ -24,18 +24,20 @@ def _():
 def _(PlayerIndex, SEASON):
     roster_idx = PlayerIndex(season=SEASON).get_data_frames()[0]
     roster = roster_idx.rename(columns={'PERSON_ID': 'PLAYER_ID'})
-    return
+    return (roster,)
 
 
-app._unparsable_cell(
-    r"""
+@app.cell
+def _(PlayerGameLogs, SEASON, pd, roster):
     logs_raw = PlayerGameLogs(
         season_nullable=SEASON,
-        seas
-    )
-    """,
-    name="_"
-)
+        last_n_games_nullable=5
+    ).get_data_frames()[0]
+
+    master_data = pd.merge(logs_raw, roster, on="PLAYER_ID", how="left")
+    master_data['GAME_DATE'] = pd.to_datetime(master_data["GAME_DATE"]).dt.date
+    master_data
+    return
 
 
 if __name__ == "__main__":
