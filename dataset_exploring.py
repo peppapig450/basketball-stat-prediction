@@ -16,8 +16,8 @@ def _():
 @app.cell
 def _():
     SEASON = '2025-26'
-    OUT_FILE = 'test_nba_subset.csv'
-    return (SEASON,)
+    OUT_FILE = 'nba_gamelogs_2025_26.parquet'
+    return OUT_FILE, SEASON
 
 
 @app.cell
@@ -28,7 +28,7 @@ def _(PlayerIndex, SEASON):
 
 
 @app.cell
-def _(PlayerGameLogs, SEASON, pd, roster):
+def _(OUT_FILE, PlayerGameLogs, SEASON, pd, roster):
     logs_raw = PlayerGameLogs(
         season_nullable=SEASON,
         last_n_games_nullable=5
@@ -36,7 +36,13 @@ def _(PlayerGameLogs, SEASON, pd, roster):
 
     master_data = pd.merge(logs_raw, roster, on="PLAYER_ID", how="left")
     master_data['GAME_DATE'] = pd.to_datetime(master_data["GAME_DATE"]).dt.date
-    master_data
+
+    master_data.to_parquet(
+        OUT_FILE,
+        engine='pyarrow',
+        compression='zstd',
+        index=False,
+    )
     return
 
 
