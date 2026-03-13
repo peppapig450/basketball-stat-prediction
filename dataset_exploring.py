@@ -9,15 +9,16 @@ def _():
     import marimo as mo
     import pandas as pd
     from nba_api.stats.endpoints import PlayerGameLogs, PlayerIndex
+    from nba_api.stats.static.teams import get_teams
 
-    return PlayerGameLogs, PlayerIndex, pd
+    return PlayerGameLogs, PlayerIndex, get_teams, pd
 
 
 @app.cell
 def _():
     SEASON = '2025-26'
-    OUT_FILE = 'nba_gamelogs_2025_26.parquet'
-    return (SEASON,)
+    OUT_FILE = 'data/nba_gamelogs_2025_26.parquet'
+    return OUT_FILE, SEASON
 
 
 @app.cell
@@ -33,20 +34,49 @@ def _(PlayerIndex, SEASON):
 
 
 @app.cell
-def _(PlayerGameLogs, SEASON, pd, roster_subset):
+def _(get_teams):
+    nba_teams = get_teams()
+
+    nba_team_ids = [team['id'] for team in nba_teams]
+    return (nba_team_ids,)
+
+
+@app.cell
+def _(PlayerGameLogs, SEASON, nba_team_ids, pd, roster_subset):
     logs_raw = PlayerGameLogs(
         league_id_nullable="00",
         season_nullable=SEASON,
-        last_n_games_nullable=5
     ).get_data_frames()[0]
 
+    # filter the logs for valid team ids to ensure that we don't have any all-star game stuff in there
+    clean_logs = logs_raw[logs_raw['TEAM_ID'].isin(nba_team_ids)]
+
     master_data = pd.merge(
-        logs_raw,
+        clean_logs,
         roster_subset,
         on="PLAYER_ID",
         how="inner"
     )
-    master_data['GAME_DATE'] = pd.to_datetime(master_data["GAME_DATE"]).dt.date
+    master_data['GAME_DATE'] = pd.to_datetime(master_data["GAME_DATE"])
+
+    # We convert draft columns to nullable integers to ensure that undrafted players don't have null values
+    draft_cols = ['DRAFT_YEAR', 'DRAFT_ROUND', 'DRAFT_NUMBER']
+    master_data[draft_cols] = master_data[draft_cols].apply(pd.to_numeric, errors='coerce').astype('Int64')
+
+    # Convert reptitive types to categories
+    category_cols = ['TEAM_ABBREVIATION', 'POSITION', 'WL', 'SEASON_YEAR']
+    master_data = master_data.astype({col: 'category' for col in category_cols})
+
+    # Get rid of unnecessary rank columns as we do not need them
+    master_data = master_data.loc[:, ~master_data.columns.str.contains('_RANK')]
+
+    # Drop other redundant columns 
+    to_drop = ['WNBA_FANTASY_PTS', 'SEASON_YEAR', 'TO_YEAR']
+    master_data = master_data.drop(columns=[col for col in to_drop if col in to_drop])
+
+    # Use booleans for columns that have a 0 or 1 for false and true respectively
+    bool_cols = ['DD2', 'TD3', 'AVAILABLE_FLAG']
+    master_data.astype({col: bool for col in bool_cols})
 
     master_data
     return logs_raw, master_data
@@ -55,7 +85,6 @@ def _(PlayerGameLogs, SEASON, pd, roster_subset):
 @app.cell
 def _(logs_raw):
     logs_raw.info()
-
     return
 
 
@@ -73,8 +102,18 @@ def _(master_data):
 
 @app.cell
 def _(master_data):
-    null_teams = master_data[master_data['TEAM_ABBREVIATION'].isna()]
-    null_teams[['GAME_DATE', 'PLAYER_NAME', 'MATCHUP', 'TEAM_ID']].head(20)
+    master_data.nunique()
+    return
+
+
+@app.cell
+def _(OUT_FILE, master_data):
+    master_data.to_parquet(
+        OUT_FILE,
+        engine='pyarrow',
+        compression='zstd',
+        index=False,
+    )
     return
 
 
