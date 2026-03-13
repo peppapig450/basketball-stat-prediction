@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.20.4"
+__generated_with = "0.21.0"
 app = marimo.App(width="medium")
 
 
@@ -11,7 +11,7 @@ def _():
     import numpy as np
     import altair as alt
 
-    return alt, mo, np, pd
+    return mo, np, pd
 
 
 @app.cell
@@ -70,26 +70,24 @@ def _(mo):
 @app.cell
 def _(clean_test_df, df_backtest, np, pd):
     # Test C values, defensive weights, and spans for EWMA
-    # def_weight = 0.0 means the defense is ignored entirely
-    # def_weight = 1.0 means defense is fully applied
+
     c_values = range(1,31)
-    def_weights = np.linspace(0,1,11)
+
+    att_weights = np.linspace(0.1, 0.8, 12) # Test volume importance
 
     # The span value is reflective of how much we want each N amount of games to dominate the average
     # so naturally it is much lower for individual teams than league-wide
-    team_spans = [20, 40, 60, 80]
-    league_spans = [200, 400, 600, 800]
+    team_spans = np.arange(10, 35, 5)
+    league_spans = [150, 200, 250, 300]
 
     team_game_stats = (
         df_backtest
             .groupby(['OPP_TEAM_ID', 'GAME_ID', 'GAME_DATE'], as_index=False)
             .agg(
                 total_fg3a=('FG3A', 'sum'),
-                total_fg3m=('FG3M', 'sum')
             )
     )
 
-    team_game_stats['avg_fg3_pct'] = team_game_stats['total_fg3m'] / team_game_stats['total_fg3a']
     team_game_stats = team_game_stats.sort_values('GAME_DATE')
 
     optimization_results = []
@@ -106,13 +104,6 @@ def _(clean_test_df, df_backtest, np, pd):
             .shift(1)
         )
 
-        league_avg_3p_pct = (
-            team_game_stats['avg_fg3_pct']
-            .ewm(span=league_span, adjust=False)
-            .mean()
-            .shift(1)
-        )
-
         for team_span in team_spans:
 
             # Team defensive EWMA
@@ -121,22 +112,15 @@ def _(clean_test_df, df_backtest, np, pd):
                 .transform(lambda x: x.ewm(span=team_span, adjust=False).mean().shift(1))
             )
 
-            opp_prev_3p_pct_allowed = (
-                team_gp['avg_fg3_pct']
-                .transform(lambda x: x.ewm(span=team_span, adjust=False).mean().shift(1))
-            )
-
             # Caclulate the defense multipliers at the team-game level
             team_game_stats['att_mult'] = (opp_prev_3pa_allowed / league_avg_3pa).fillna(1.0)
-            team_game_stats['pct_mult'] = (opp_prev_3p_pct_allowed / league_avg_3p_pct).fillna(1.0)
 
             # Map our multipliers back to the player-level dataframe
             # We use a temporary merge to align the multipliers with clean_test_df
-            multiplier_map = team_game_stats[['GAME_ID', 'OPP_TEAM_ID', 'att_mult', 'pct_mult']]
+            multiplier_map = team_game_stats[['GAME_ID', 'OPP_TEAM_ID', 'att_mult']]
             merged_df = clean_test_df.merge(multiplier_map, on=['GAME_ID', 'OPP_TEAM_ID'], how='left')
 
             curr_att_mult = merged_df['att_mult'].values
-            curr_pct_mult = merged_df['pct_mult'].values
 
             # We test C values from 1 to 30
             for c_val in c_values:
@@ -148,14 +132,12 @@ def _(clean_test_df, df_backtest, np, pd):
                         (c_val * clean_test_df['season_avg_before'])
                 ) / (clean_test_df['recent_gp_before'] + c_val)
 
-                for def_weight in def_weights:
-                    # Dampen the multipliers
-                    adj_att_mult = 1 + (curr_att_mult - 1) * def_weight
-                    adj_pct_mult = 1 + (curr_pct_mult - 1) * def_weight
+                for w_att in att_weights:
 
-                    # Apply our weighted defensive context
-                    # Final Pred = Base * Def Weight * (Volume Multiplier * Efficiency Multiplier)
-                    final_predictions = base_pred * adj_att_mult * adj_pct_mult
+                    # Apply power-law damping
+                    adj_att_mult = curr_att_mult ** w_att
+
+                    final_predictions = base_pred * adj_att_mult
 
                     # Calculate MAE (Mean Absolute Error)
                     mae = (clean_test_df['FG3M'] - final_predictions).abs().mean()
@@ -165,7 +147,7 @@ def _(clean_test_df, df_backtest, np, pd):
 
                     optimization_results.append({
                         'C': c_val,
-                        'Def_Weight': def_weight,
+                        'W_Att': w_att,
                         'Team_Span': team_span,
                         'League_Span': league_span,
                         'MAE': mae,
@@ -178,41 +160,12 @@ def _(clean_test_df, df_backtest, np, pd):
     best_row = results_df.loc[results_df['MAE'].idxmin()]
 
     best_c = best_row['C']
-    best_w = best_row['Def_Weight']
+    best_w_att = best_row['W_Att']
     best_team_span = best_row['Team_Span']
     best_league_span = best_row['League_Span']
 
     results_df
-    return best_c, best_w, results_df
-
-
-@app.cell
-def _(alt, best_c, best_w, results_df):
-    heatmap = alt.Chart(results_df).mark_rect().encode(
-        x=alt.X('C:O', title='Smoothing Constant (C)'),
-        y=alt.Y('Def_Weight:O', title='Defensive Weight', sort='descending'),
-        color=alt.Color('MAE:Q',
-                        scale=alt.Scale(scheme='viridis', reverse=True),
-                        title='Error (Lower is Better)'
-        ),
-        tooltip=['C', 'Def_Weight', 'MAE']
-    ).properties(
-        title=f"Best Params: C={best_c}, Weight={best_w}",
-        width=500,
-        height=400,
-    )
-
-    # add a point to highlight the best parameters
-    best_point = alt.Chart(results_df[
-        (results_df['C'] == best_c) & (results_df['Def_Weight'] == best_w)
-    ]).mark_point(color='red', size=200, thickness=3).encode(
-        x='C:O',
-        y='Def_Weight:O'
-    )
-
-    chart = heatmap + best_point
-    chart
-    return (chart,)
+    return (results_df,)
 
 
 @app.cell
@@ -241,12 +194,12 @@ def _(results_df, run_name):
 
 
 @app.cell
-def _(chart, git_hash, output_dir, run_name, timestamp):
+def _(git_hash, output_dir, run_name, timestamp):
     # We export in the Vega-Lite spec
     chart_filename = f"{run_name}_backtest_3point_chart_{git_hash}_{timestamp}.json"
     chart_path = output_dir / chart_filename
 
-    chart.save(str(chart_path))
+    # chart.save(str(chart_path))
     return
 
 
