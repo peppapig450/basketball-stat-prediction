@@ -23,6 +23,13 @@ def _(pd):
 
 
 @app.cell
+def _():
+    # Calculate team's defensive performances over time
+    # We look at what the opponent of each team did
+    return
+
+
+@app.cell
 def _(df_backtest):
     # Generate Point-in-Time features 
     # We shift by 1 so that the prediction for tonight only knows about past games
