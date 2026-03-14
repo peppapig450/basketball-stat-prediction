@@ -23,13 +23,6 @@ def _(pd):
 
 
 @app.cell
-def _():
-    # Calculate team's defensive performances over time
-    # We look at what the opponent of each team did
-    return
-
-
-@app.cell
 def _(df_backtest):
     # Generate Point-in-Time features 
     # We shift by 1 so that the prediction for tonight only knows about past games
@@ -94,6 +87,41 @@ def _(alt, best_c_mae, results_df):
     )
 
     chart
+    return (chart,)
+
+
+@app.cell
+def _(results_df):
+    from pathlib import Path
+    import subprocess
+    from datetime import datetime, UTC
+
+    output_dir = Path("experiments")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Grab the Git HEAD hash to use in the filename
+    git_hash = subprocess.run(
+        ['git', 'rev-parse', '--short', 'HEAD'],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    # We use UTC to be extra proper
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M")
+    filename = f"backtest_3point_c_val_{git_hash}_{timestamp}.csv"
+    file_path = output_dir / filename
+
+    results_df.to_csv(file_path, index=False)
+    return git_hash, output_dir, timestamp
+
+
+@app.cell
+def _(chart, git_hash, output_dir, timestamp):
+    # We export in the Vega-Lite spec
+    chart_filename = f"backtest_3point_c_val_chart_{git_hash}_{timestamp}.json"
+    chart_path = output_dir / chart_filename
+
+    chart.save(str(chart_path))
     return
 
 
