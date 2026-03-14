@@ -24,6 +24,32 @@ def _(pd):
 
 @app.cell
 def _(df_backtest):
+    # Calculate team's defensive performances over time
+    # We look at what the opponent of each team did defensively
+    team_gp = df_backtest.groupby('OPP_TEAM_ID')
+
+    # Calculate the rolling averages for both the league and the teams
+    # We shift by 1 so we only know the stats PRIOR to the game
+    df_backtest['opp_prev_3pa_allowed'] = team_gp['FG3A'].transform(lambda x: x.expanding().mean().shift(1))
+    df_backtest['opp_prev_3p_pct_allowed'] = team_gp['FG3_PCT'].transform(lambda x: x.expanding().mean().shift(1))
+
+    # Calculate league averages at each point time (we take the expanding mean of all games)
+    df_backtest['league_avg_3pa'] = df_backtest['FG3A'].expanding().mean().shift(1)
+    df_backtest['league_avg_3p_pct'] = df_backtest['FG3_PCT'].expanding().mean().shift(1)
+
+    # Create the multiplies we'll use in our formula
+    df_backtest['def_att_mult'] = df_backtest['opp_prev_3pa_allowed'] / df_backtest['league_avg_3pa']
+    df_backtest['def_pct_mult'] = df_backtest['opp_prev_3p_pct_allowed'] / df_backtest['league_avg_3p_pct']
+
+    # Fill any NaNs that may exist in early season games where averages aren't stable with 1.0 (Neutral)
+    df_backtest[['def_att_mult', 'def_pct_mult']] = df_backtest[['def_att_mult', 'def_pct_mult']].fillna(1.0)
+
+    df_backtest
+    return
+
+
+@app.cell
+def _(df_backtest):
     # Generate Point-in-Time features 
     # We shift by 1 so that the prediction for tonight only knows about past games
     gp = df_backtest.groupby('PLAYER_ID')['FG3M']
@@ -53,16 +79,20 @@ def _(clean_test_df, pd):
         # Apply our Bayesian Formula
         # Pred = (n_recent * avg_recent + C * avg_reason) / (n_recent + C)
         # TODO: we can make our prediction more accurate by incorporating more priors
-        predictions = (
+        base_pred = (
                 (clean_test_df['recent_gp_before'] * clean_test_df['recent_avg_before']) + 
                 (c_val * clean_test_df['season_avg_before'])
         ) / (clean_test_df['recent_gp_before'] + c_val)
 
+        # Apply our defensive context
+        # Final Pred = Base * Volume Multiplier * Efficiency Multiplier
+        final_predictions = base_pred * clean_test_df['def_att_mult'] * clean_test_df['def_pct_mult']
+
         # Calculate MAE (Mean Absolute Error)
-        mae = (clean_test_df['FG3M'] - predictions).abs().mean()
+        mae = (clean_test_df['FG3M'] - final_predictions).abs().mean()
 
         # Calculate MSE (Mean Squared Error)
-        mse = ((clean_test_df['FG3M'] - predictions) ** 2).mean()
+        mse = ((clean_test_df['FG3M'] - final_predictions) ** 2).mean()
 
         optimization_results.append({'C': c_val, 'MAE': mae, 'MSE': mse})
 
