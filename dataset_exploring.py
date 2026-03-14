@@ -37,12 +37,14 @@ def _(PlayerIndex, SEASON):
 def _(get_teams):
     nba_teams = get_teams()
 
+    team_id_map = {team['abbreviation']: team['id'] for team in nba_teams}
+
     nba_team_ids = [team['id'] for team in nba_teams]
-    return (nba_team_ids,)
+    return nba_team_ids, team_id_map
 
 
 @app.cell
-def _(PlayerGameLogs, SEASON, nba_team_ids, pd, roster_subset):
+def _(PlayerGameLogs, SEASON, nba_team_ids, pd, roster_subset, team_id_map):
     logs_raw = PlayerGameLogs(
         league_id_nullable="00",
         season_nullable=SEASON,
@@ -59,9 +61,13 @@ def _(PlayerGameLogs, SEASON, nba_team_ids, pd, roster_subset):
     )
     master_data['GAME_DATE'] = pd.to_datetime(master_data["GAME_DATE"])
 
+    # Convert the year column to Int16 for memory purposes
+    career_cols = ['FROM_YEAR']
+    master_data[career_cols] = master_data[career_cols].apply(pd.to_numeric, errors='coerce').astype('Int16')
+
     # We convert draft columns to nullable integers to ensure that undrafted players don't have null values
-    draft_cols = ['DRAFT_YEAR', 'DRAFT_ROUND', 'DRAFT_NUMBER']
-    master_data[draft_cols] = master_data[draft_cols].apply(pd.to_numeric, errors='coerce').astype('Int64')
+    draft_cols = ['DRAFT_YEAR', 'DRAFT_ROUND', 'DRAFT_NUMBER', 'FROM_YEAR']
+    master_data[draft_cols] = master_data[draft_cols].apply(pd.to_numeric, errors='coerce').astype('Int16')
 
     # Convert reptitive types to categories
     category_cols = ['TEAM_ABBREVIATION', 'POSITION', 'WL', 'SEASON_YEAR']
@@ -76,7 +82,27 @@ def _(PlayerGameLogs, SEASON, nba_team_ids, pd, roster_subset):
 
     # Use booleans for columns that have a 0 or 1 for false and true respectively
     bool_cols = ['DD2', 'TD3', 'AVAILABLE_FLAG']
-    master_data.astype({col: bool for col in bool_cols})
+    master_data[bool_cols] = master_data[bool_cols].astype(bool)
+
+    # Split the matchup column into a boolean for Home games and one for the opponent
+    master_data['IS_HOME'] = master_data['MATCHUP'].str.contains('vs.')
+    master_data['OPPONENT'] = master_data['MATCHUP'].str.split().str[-1]
+
+    # Since this winds up as an object we need to convert it to a category
+    master_data['OPPONENT'] = master_data['OPPONENT'].astype('category')
+
+    # Map the opponent's abbreviation to their ID to allow for filtering by opponents
+    master_data['OPP_TEAM_ID'] = master_data['OPPONENT'].map(team_id_map)
+
+    # Drop any rows where the mapping failed (Guangzhou, Melbourne, Tel Aviv, etc..)
+    # for some reason even tho it should be fetching regular season games only the api
+    # returns pre-season games against international opponents
+    master_data = master_data.dropna(subset=['OPP_TEAM_ID'])
+
+    # Cast to integer instead of a float since a float is unneccessary
+    master_data['OPP_TEAM_ID'] = master_data['OPP_TEAM_ID'].astype(int)
+
+    master_data = master_data.drop(columns=['MATCHUP'])
 
     master_data
     return logs_raw, master_data
@@ -97,12 +123,6 @@ def _(roster):
 @app.cell
 def _(master_data):
     master_data.info()
-    return
-
-
-@app.cell
-def _(master_data):
-    master_data.nunique()
     return
 
 
