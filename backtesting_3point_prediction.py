@@ -40,33 +40,7 @@ def _(pd):
 
 @app.cell
 def _(df_backtest):
-    # Calculate team's defensive performances over time
-    # We look at what the opponent of each team did defensively
-    team_gp = df_backtest.groupby('OPP_TEAM_ID')
-
-    # Calculate the rolling averages for both the league and the teams
-    # We shift by 1 so we only know the stats PRIOR to the game
-    df_backtest['opp_prev_3pa_allowed'] = team_gp['FG3A'].transform(lambda x: x.expanding().mean().shift(1))
-    df_backtest['opp_prev_3p_pct_allowed'] = team_gp['FG3_PCT'].transform(lambda x: x.expanding().mean().shift(1))
-
-    # Calculate league averages at each point time (we take the expanding mean of all games)
-    df_backtest['league_avg_3pa'] = df_backtest['FG3A'].expanding().mean().shift(1)
-    df_backtest['league_avg_3p_pct'] = df_backtest['FG3_PCT'].expanding().mean().shift(1)
-
-    # Create the multiplies we'll use in our formula
-    df_backtest['def_att_mult'] = df_backtest['opp_prev_3pa_allowed'] / df_backtest['league_avg_3pa']
-    df_backtest['def_pct_mult'] = df_backtest['opp_prev_3p_pct_allowed'] / df_backtest['league_avg_3p_pct']
-
-    # Fill any NaNs that may exist in early season games where averages aren't stable with 1.0 (Neutral)
-    df_backtest[['def_att_mult', 'def_pct_mult']] = df_backtest[['def_att_mult', 'def_pct_mult']].fillna(1.0)
-
-    df_backtest
-    return
-
-
-@app.cell
-def _(df_backtest):
-    # Generate Point-in-Time features 
+    # Generate Point-in-Time features
     # We shift by 1 so that the prediction for tonight only knows about past games
     gp = df_backtest.groupby('PLAYER_ID')['FG3M']
 
@@ -85,52 +59,128 @@ def _(df_backtest):
     return (clean_test_df,)
 
 
-@app.cell
-def _(clean_test_df, np, pd):
-    # Setup our optimization loop
-    optimization_results = []
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    since our most optimal team spans and league spans are 20 and 200, we can try going even lower to see if that offers further improvements
+    """)
+    return
 
+
+@app.cell
+def _(clean_test_df, df_backtest, np, pd):
     # Test C values, defensive weights, and spans for EWMA
     # def_weight = 0.0 means the defense is ignored entirely
     # def_weight = 1.0 means defense is fully applied
     c_values = range(1,31)
     def_weights = np.linspace(0,1,11)
 
+    # The span value is reflective of how much we want each N amount of games to dominate the average
+    # so naturally it is much lower for individual teams than league-wide
+    team_spans = [20, 40, 60, 80]
+    league_spans = [200, 400, 600, 800]
 
-    # We test C values from 1 to 30
-    for c_val in c_values:
-        # Apply our Bayesian Formula
-        # Pred = (n_recent * avg_recent + C * avg_reason) / (n_recent + C)
-        # TODO: we can make our prediction more accurate by incorporating more priors
-        base_pred = (
-                (clean_test_df['recent_gp_before'] * clean_test_df['recent_avg_before']) + 
-                (c_val * clean_test_df['season_avg_before'])
-        ) / (clean_test_df['recent_gp_before'] + c_val)
+    team_game_stats = (
+        df_backtest
+            .groupby(['OPP_TEAM_ID', 'GAME_ID', 'GAME_DATE'], as_index=False)
+            .agg(
+                total_fg3a=('FG3A', 'sum'),
+                total_fg3m=('FG3M', 'sum')
+            )
+    )
 
-        for def_weight in def_weights:
-            # Dampen the multipliers
-            # if weight is 0.5, a 10% harder defense (0.90) becomes a 5% harder defense (0.95)
-            adj_att_mult = 1 + (clean_test_df['def_att_mult'] - 1) * def_weight
-            adj_pct_mult = 1 + (clean_test_df['def_pct_mult'] - 1) * def_weight
-        
-            # Apply our weighted defensive context
-            # Final Pred = Base * Def Weight * (Volume Multiplier * Efficiency Multiplier)
-            final_predictions = base_pred * adj_att_mult 
+    team_game_stats['avg_fg3_pct'] = team_game_stats['total_fg3m'] / team_game_stats['total_fg3a']
+    team_game_stats = team_game_stats.sort_values('GAME_DATE')
 
-            # Calculate MAE (Mean Absolute Error)
-            mae = (clean_test_df['FG3M'] - final_predictions).abs().mean()
+    optimization_results = []
 
-            # Calculate MSE (Mean Squared Error)
-            mse = ((clean_test_df['FG3M'] - final_predictions) ** 2).mean()
+    team_gp = team_game_stats.groupby('OPP_TEAM_ID')
 
-            optimization_results.append({'C': c_val, 'Def_Weight': def_weight, 'MAE': mae, 'MSE': mse})
+    for league_span in league_spans:
+
+        # First we calculate the EWMA for each span value for the league
+        league_avg_3pa = (
+            team_game_stats['total_fg3a']
+            .ewm(span=league_span, adjust=False)
+            .mean()
+            .shift(1)
+        )
+
+        league_avg_3p_pct = (
+            team_game_stats['avg_fg3_pct']
+            .ewm(span=league_span, adjust=False)
+            .mean()
+            .shift(1)
+        )
+
+        for team_span in team_spans:
+
+            # Team defensive EWMA
+            opp_prev_3pa_allowed = (
+                team_gp['total_fg3a']
+                .transform(lambda x: x.ewm(span=team_span, adjust=False).mean().shift(1))
+            )
+
+            opp_prev_3p_pct_allowed = (
+                team_gp['avg_fg3_pct']
+                .transform(lambda x: x.ewm(span=team_span, adjust=False).mean().shift(1))
+            )
+
+            # Caclulate the defense multipliers at the team-game level
+            team_game_stats['att_mult'] = (opp_prev_3pa_allowed / league_avg_3pa).fillna(1.0)
+            team_game_stats['pct_mult'] = (opp_prev_3p_pct_allowed / league_avg_3p_pct).fillna(1.0)
+
+            # Map our multipliers back to the player-level dataframe
+            # We use a temporary merge to align the multipliers with clean_test_df
+            multiplier_map = team_game_stats[['GAME_ID', 'OPP_TEAM_ID', 'att_mult', 'pct_mult']]
+            merged_df = clean_test_df.merge(multiplier_map, on=['GAME_ID', 'OPP_TEAM_ID'], how='left')
+
+            curr_att_mult = merged_df['att_mult'].values
+            curr_pct_mult = merged_df['pct_mult'].values
+
+            # We test C values from 1 to 30
+            for c_val in c_values:
+                # Apply our Bayesian Formula
+                # Pred = (n_recent * avg_recent + C * avg_reason) / (n_recent + C)
+                # TODO: we can make our prediction more accurate by incorporating more priors
+                base_pred = (
+                        (clean_test_df['recent_gp_before'] * clean_test_df['recent_avg_before']) + 
+                        (c_val * clean_test_df['season_avg_before'])
+                ) / (clean_test_df['recent_gp_before'] + c_val)
+
+                for def_weight in def_weights:
+                    # Dampen the multipliers
+                    adj_att_mult = 1 + (curr_att_mult - 1) * def_weight
+                    adj_pct_mult = 1 + (curr_pct_mult - 1) * def_weight
+
+                    # Apply our weighted defensive context
+                    # Final Pred = Base * Def Weight * (Volume Multiplier * Efficiency Multiplier)
+                    final_predictions = base_pred * adj_att_mult * adj_pct_mult
+
+                    # Calculate MAE (Mean Absolute Error)
+                    mae = (clean_test_df['FG3M'] - final_predictions).abs().mean()
+
+                    # Calculate MSE (Mean Squared Error)
+                    mse = ((clean_test_df['FG3M'] - final_predictions) ** 2).mean()
+
+                    optimization_results.append({
+                        'C': c_val,
+                        'Def_Weight': def_weight,
+                        'Team_Span': team_span,
+                        'League_Span': league_span,
+                        'MAE': mae,
+                        'MSE': mse
+                    })
 
     # Find the best combination
     results_df = pd.DataFrame(optimization_results)
 
     best_row = results_df.loc[results_df['MAE'].idxmin()]
+
     best_c = best_row['C']
     best_w = best_row['Def_Weight']
+    best_team_span = best_row['Team_Span']
+    best_league_span = best_row['League_Span']
 
     results_df
     return best_c, best_w, results_df
@@ -183,7 +233,7 @@ def _(results_df, run_name):
 
     # We use UTC to be extra proper
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M")
-    filename = f"{run_name}_backtest_3point_c_val_{git_hash}_{timestamp}.csv"
+    filename = f"{run_name}_backtest_3point_{git_hash}_{timestamp}.csv"
     file_path = output_dir / filename
 
     results_df.to_csv(file_path, index=False)
@@ -193,7 +243,7 @@ def _(results_df, run_name):
 @app.cell
 def _(chart, git_hash, output_dir, run_name, timestamp):
     # We export in the Vega-Lite spec
-    chart_filename = f"{run_name}_backtest_3point_c_val_chart_{git_hash}_{timestamp}.json"
+    chart_filename = f"{run_name}_backtest_3point_chart_{git_hash}_{timestamp}.json"
     chart_path = output_dir / chart_filename
 
     chart.save(str(chart_path))
