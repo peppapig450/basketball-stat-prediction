@@ -11,7 +11,23 @@ def _():
     import numpy as np
     import altair as alt
 
-    return alt, pd
+    return alt, mo, np, pd
+
+
+@app.cell
+def _(mo):
+    run_name_input = mo.ui.text(
+        label="Run name",
+        placeholder="testing",
+    )
+    run_name_input
+    return (run_name_input,)
+
+
+@app.cell
+def _(run_name_input):
+    run_name = run_name_input.value or "unnamed_run"
+    return (run_name,)
 
 
 @app.cell
@@ -70,12 +86,19 @@ def _(df_backtest):
 
 
 @app.cell
-def _(clean_test_df, pd):
+def _(clean_test_df, np, pd):
     # Setup our optimization loop
     optimization_results = []
 
+    # Test C values, defensive weights, and spans for EWMA
+    # def_weight = 0.0 means the defense is ignored entirely
+    # def_weight = 1.0 means defense is fully applied
+    c_values = range(1,31)
+    def_weights = np.linspace(0,1,11)
+
+
     # We test C values from 1 to 30
-    for c_val in range(1, 31):
+    for c_val in c_values:
         # Apply our Bayesian Formula
         # Pred = (n_recent * avg_recent + C * avg_reason) / (n_recent + C)
         # TODO: we can make our prediction more accurate by incorporating more priors
@@ -84,44 +107,66 @@ def _(clean_test_df, pd):
                 (c_val * clean_test_df['season_avg_before'])
         ) / (clean_test_df['recent_gp_before'] + c_val)
 
-        # Apply our defensive context
-        # Final Pred = Base * Volume Multiplier * Efficiency Multiplier
-        final_predictions = base_pred * clean_test_df['def_att_mult'] * clean_test_df['def_pct_mult']
+        for def_weight in def_weights:
+            # Dampen the multipliers
+            # if weight is 0.5, a 10% harder defense (0.90) becomes a 5% harder defense (0.95)
+            adj_att_mult = 1 + (clean_test_df['def_att_mult'] - 1) * def_weight
+            adj_pct_mult = 1 + (clean_test_df['def_pct_mult'] - 1) * def_weight
+        
+            # Apply our weighted defensive context
+            # Final Pred = Base * Def Weight * (Volume Multiplier * Efficiency Multiplier)
+            final_predictions = base_pred * adj_att_mult 
 
-        # Calculate MAE (Mean Absolute Error)
-        mae = (clean_test_df['FG3M'] - final_predictions).abs().mean()
+            # Calculate MAE (Mean Absolute Error)
+            mae = (clean_test_df['FG3M'] - final_predictions).abs().mean()
 
-        # Calculate MSE (Mean Squared Error)
-        mse = ((clean_test_df['FG3M'] - final_predictions) ** 2).mean()
+            # Calculate MSE (Mean Squared Error)
+            mse = ((clean_test_df['FG3M'] - final_predictions) ** 2).mean()
 
-        optimization_results.append({'C': c_val, 'MAE': mae, 'MSE': mse})
+            optimization_results.append({'C': c_val, 'Def_Weight': def_weight, 'MAE': mae, 'MSE': mse})
 
-    # Find our winner
+    # Find the best combination
     results_df = pd.DataFrame(optimization_results)
-    best_c_mae = results_df.loc[results_df['MAE'].idxmin(), 'C']
-    best_c_mse = results_df.loc[results_df['MSE'].idxmin(), 'C']
+
+    best_row = results_df.loc[results_df['MAE'].idxmin()]
+    best_c = best_row['C']
+    best_w = best_row['Def_Weight']
 
     results_df
-    return best_c_mae, results_df
+    return best_c, best_w, results_df
 
 
 @app.cell
-def _(alt, best_c_mae, results_df):
-    chart = alt.Chart(results_df).mark_line(point = True).encode(
-        x='C:Q',
-        y=alt.Y('MAE:Q', scale=alt.Scale(zero=False)),
-        tooltip=['C', 'MAE']
+def _(alt, best_c, best_w, results_df):
+    heatmap = alt.Chart(results_df).mark_rect().encode(
+        x=alt.X('C:O', title='Smoothing Constant (C)'),
+        y=alt.Y('Def_Weight:O', title='Defensive Weight', sort='descending'),
+        color=alt.Color('MAE:Q',
+                        scale=alt.Scale(scheme='viridis', reverse=True),
+                        title='Error (Lower is Better)'
+        ),
+        tooltip=['C', 'Def_Weight', 'MAE']
     ).properties(
-        title=f"Optimization Curve: Best C is {best_c_mae}",
-        width=500
+        title=f"Best Params: C={best_c}, Weight={best_w}",
+        width=500,
+        height=400,
     )
 
+    # add a point to highlight the best parameters
+    best_point = alt.Chart(results_df[
+        (results_df['C'] == best_c) & (results_df['Def_Weight'] == best_w)
+    ]).mark_point(color='red', size=200, thickness=3).encode(
+        x='C:O',
+        y='Def_Weight:O'
+    )
+
+    chart = heatmap + best_point
     chart
     return (chart,)
 
 
 @app.cell
-def _(results_df):
+def _(results_df, run_name):
     from pathlib import Path
     import subprocess
     from datetime import datetime, UTC
@@ -138,7 +183,7 @@ def _(results_df):
 
     # We use UTC to be extra proper
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M")
-    filename = f"backtest_3point_c_val_{git_hash}_{timestamp}.csv"
+    filename = f"{run_name}_backtest_3point_c_val_{git_hash}_{timestamp}.csv"
     file_path = output_dir / filename
 
     results_df.to_csv(file_path, index=False)
@@ -146,9 +191,9 @@ def _(results_df):
 
 
 @app.cell
-def _(chart, git_hash, output_dir, timestamp):
+def _(chart, git_hash, output_dir, run_name, timestamp):
     # We export in the Vega-Lite spec
-    chart_filename = f"backtest_3point_c_val_chart_{git_hash}_{timestamp}.json"
+    chart_filename = f"{run_name}_backtest_3point_c_val_chart_{git_hash}_{timestamp}.json"
     chart_path = output_dir / chart_filename
 
     chart.save(str(chart_path))
