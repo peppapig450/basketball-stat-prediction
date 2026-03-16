@@ -2,7 +2,7 @@ altair==6.0.0
 anyio==4.12.1
 attrs==25.4.0
 certifi==2026.2.25
-charset-normalizer==3.4.5
+charset-normalizer==3.4.6
 click==8.3.1
 docutils==0.22.4
 h11==0.16.0
@@ -13,13 +13,13 @@ jinja2==3.1.6
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 loro==1.10.3
-marimo==0.20.4
+marimo==0.21.0
 markdown==3.10.2
 markupsafe==3.0.3
 msgspec==0.20.0
-narwhals==2.17.0
+narwhals==2.18.0
 nba-api==1.11.4
-numpy==2.4.2
+numpy==2.4.3
 packaging==26.0
 pandas==3.0.1
 parso==0.8.6
@@ -37,5 +37,5 @@ starlette==0.52.1
 tomlkit==0.14.0
 typing-extensions==4.15.0
 urllib3==2.6.3
-uvicorn==0.41.0
+uvicorn==0.42.0
 websockets==16.0
