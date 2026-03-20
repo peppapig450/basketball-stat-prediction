@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.21.0"
+__generated_with = "0.20.4"
 app = marimo.App(width="medium")
 
 
@@ -178,7 +178,7 @@ def _(clean_test_df, df_backtest, np, pd, results_df):
             (c_val * merged_calib['season_avg_before'])
     ) / (merged_calib['recent_gp_before'] + c_val)
 
-    merged_calib['final_pred'] = base_pred * (merged_calib['att_mult'] ** w_att)
+    merged_calib['final_pred'] = base_pred * (1 + w_att * np.log(np.maximum(merged_calib['att_mult'], 1e-6)))
     merged_calib['actual'] = merged_calib['FG3M']
 
     # First bin approach that is simplified

@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.21.0"
+__generated_with = "0.20.4"
 app = marimo.App(width="medium")
 
 
@@ -135,8 +135,8 @@ def _(clean_test_df, df_backtest, np, pd):
                 for w_att in att_weights:
 
                     # Apply power-law damping
-                    adj_att_mult = curr_att_mult ** w_att
-
+                    adj_att_mult = 1 + w_att * np.log(np.maximum(curr_att_mult, 1e-6))
+                
                     final_predictions = base_pred * adj_att_mult
 
                     errors = clean_test_df['FG3M'] - final_predictions
