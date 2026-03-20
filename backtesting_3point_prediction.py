@@ -78,7 +78,7 @@ def _(clean_test_df, df_backtest, np, pd):
     # The span value is reflective of how much we want each N amount of games to dominate the average
     # so naturally it is much lower for individual teams than league-wide
     team_spans = np.arange(10, 35, 5)
-    league_spans = [150, 200, 250, 300]
+    league_spans = [150, 200, 250, 300, 350, 400, 450]
 
     team_game_stats = (
         df_backtest
@@ -139,11 +139,19 @@ def _(clean_test_df, df_backtest, np, pd):
 
                     final_predictions = base_pred * adj_att_mult
 
+                    errors = clean_test_df['FG3M'] - final_predictions
+
                     # Calculate MAE (Mean Absolute Error)
-                    mae = (clean_test_df['FG3M'] - final_predictions).abs().mean()
+                    mae = errors.abs().mean()
 
                     # Calculate MSE (Mean Squared Error)
-                    mse = ((clean_test_df['FG3M'] - final_predictions) ** 2).mean()
+                    mse = (errors ** 2).mean()
+
+                    # Calculate Root Mean Squared Error
+                    rmse = np.sqrt(mse)
+
+                    # Calculate Average bias
+                    bias = errors.mean()
 
                     optimization_results.append({
                         'C': c_val,
@@ -151,13 +159,26 @@ def _(clean_test_df, df_backtest, np, pd):
                         'Team_Span': team_span,
                         'League_Span': league_span,
                         'MAE': mae,
-                        'MSE': mse
+                        'MSE': mse,
+                        'RMSE': rmse,
+                        'Bias': bias,
                     })
 
     # Find the best combination
     results_df = pd.DataFrame(optimization_results)
 
-    best_row = results_df.loc[results_df['MAE'].idxmin()]
+    # Create a combined score
+    # We want low MAE, but we also want Bias to be as close to 0 as possible
+    results_df['bias_abs'] = results_df['Bias'].abs()
+
+    # Rank them (lower rank is better)
+    results_df['mae_rank'] = results_df['MAE'].rank()
+    results_df['bias_rank'] = results_df['bias_abs'].rank()
+
+    # Find the row that performs well in both
+    results_df['combined_score'] = (results_df['mae_rank'] * 0.7) + (results_df['bias_rank'] * 0.3)
+
+    best_row = results_df.loc[results_df['combined_score'].idxmin()]
 
     best_c = best_row['C']
     best_w_att = best_row['W_Att']
